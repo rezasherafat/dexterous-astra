@@ -41,9 +41,9 @@ def main():
             count = len(pose['q'])
             focus = control.get('focus', -1)
             selected = [focus] if 0 <= focus < count else list(range(count))
-            columns = 1 if len(selected) == 1 else 16
-            tile_w, tile_h = (640, 480) if columns == 1 else (160, 120)
-            active_renderer = detail_renderer if columns == 1 else renderer
+            columns = 1 if len(selected) == 1 else min(16, math.ceil(math.sqrt(len(selected))))
+            tile_w, tile_h = (640, 480) if len(selected) <= 4 else (160, 120)
+            active_renderer = detail_renderer if len(selected) <= 4 else renderer
             width = tile_w * len(views)
             grid = Image.new('RGB', (columns * width, math.ceil(len(selected) / columns) * (tile_h + 20)), '#101414')
             draw = ImageDraw.Draw(grid)
@@ -77,12 +77,12 @@ def main():
             frame += 1
             held = sum(pose['holding'])
             write_json(args.directory / 'state.json', dict(status='paused' if control.get('paused') else 'running',
-                phase=f'{held}/{count} holding · {count-held}/{count} spinning', frame=frame,
+                phase=f'{held}/{count} in hold phase · {count-held}/{count} spinning', frame=frame,
                 sim_time=pose['sim_time'], turns=float(np.mean(pose['turns'])),
                 updated=pose['updated'], camera=camera, environments=environments,
                 simulation=dict(backend='physx', device='cuda:0', num_envs=count, policy_device='cuda:0'),
                 trials=count, focus=focus, grid_columns=columns, visible_environments=selected))
-            time.sleep(max(0, (.5 if columns > 1 else .1) - (time.monotonic() - started)))
+            time.sleep(max(0, (.5 if len(selected) > 4 else .1) - (time.monotonic() - started)))
     finally:
         renderer.close()
         detail_renderer.close()

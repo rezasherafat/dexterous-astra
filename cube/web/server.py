@@ -14,6 +14,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB = Path(__file__).resolve().parent
+PEN_POLICIES = {
+    'released': ('Released actor', ROOT / 'pen/checkpoints/best_policy.pt', ROOT / 'pen/checkpoints/env_cfg.json'),
+    'trained-1env': ('Fine-tuned actor · 1 env / 20 updates', ROOT / 'runs/pen-training-1env-001/policy.pt', ROOT / 'runs/pen-training-1env-001/env_cfg.json'),
+}
 
 
 class Runner:
@@ -26,6 +30,8 @@ class Runner:
         self.physics = 'cpu'
         self.task = 'cube'
         self.seed = 5005
+        self.trials = 256
+        self.policy = 'released'
         self.control = dict(paused=False, camera='both')
         self.stopped = False
 
@@ -45,7 +51,8 @@ class Runner:
             except FileNotFoundError:
                 pass
             data.update(run=self.directory.name, device=self.device, physics=self.physics, task=self.task, seed=self.seed,
-                        output=str(self.directory))
+                        output=str(self.directory), trials=self.trials, policy=self.policy,
+                        policy_label=PEN_POLICIES[self.policy][0], checkpoint=str(PEN_POLICIES[self.policy][1]))
             data['pickup_done'] = (self.directory / 'plan.json').exists()
             data['maneuvers'] = []
             for path in sorted(self.directory.glob('maneuver-*.json')):
@@ -54,7 +61,7 @@ class Runner:
                 except json.JSONDecodeError:
                     pass
             if self.task == 'pen' and self.process.poll() is None and (self.directory / 'meta.json').exists():
-                data.update(status='scoring', phase='Scoring all 256 completed trajectories')
+                data.update(status='scoring', phase=f'Scoring all {self.trials} completed trajectories')
             if self.process.poll() is not None:
                 data['status'] = 'stopped' if self.stopped else 'failed'
                 report_path = self.directory / 'report.json'
@@ -65,16 +72,24 @@ class Runner:
                     data['error'] = (self.directory / 'solve.log').read_text()[-3000:]
             return data
 
-    def start(self, device, seed, physics="cpu", task="cube"):
+    def start(self, device, seed, physics="cpu", task="cube", trials=256, policy="released"):
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise ValueError('A simulation is already running.')
             if task not in ('cube', 'pen'):
                 raise ValueError('Unknown simulation task.')
+            if type(trials) is not int or trials not in (2, 16, 64, 128, 256):
+                raise ValueError('Choose 2, 16, 64, 128, or 256 environments.')
+            if policy not in PEN_POLICIES:
+                raise ValueError('Unknown pen policy.')
+            if task == 'pen' and not all(p.is_file() for p in PEN_POLICIES[policy][1:]):
+                raise ValueError('Selected policy files are unavailable on this host.')
+            if type(seed) is not int or not 0 <= seed < 2**32:
+                raise ValueError('Seed must be an integer from 0 to 4294967295.')
             if task == 'pen':
                 device, physics = 'cuda', 'physx'
-                if seed > 2**32 - 256:
-                    raise ValueError('Pen seed must leave room for 256 trials.')
+                if seed > 2**32 - trials:
+                    raise ValueError(f'Pen seed must leave room for {trials} trials.')
             if physics not in ('cpu', 'warp', 'physx') or (task == 'cube' and physics == 'physx'):
                 raise ValueError('Physics must be cpu or warp.')
             if device not in ('cpu', 'cuda'):
@@ -85,6 +100,7 @@ class Runner:
             (self.directory / 'live').mkdir(parents=True)
             self.device, self.seed, self.stopped = device, seed, False
             self.physics, self.task = physics, task
+            self.trials, self.policy = trials, policy
             self.control['paused'] = False
             if task == 'pen':
                 self.control['camera'] = 'close'
@@ -97,7 +113,9 @@ class Runner:
                        '--seed', str(seed), '--device', device, '--physics', physics, '--scramble', 'U F L',
                        '--live-dir', str(self.directory / 'live')]
             if task == 'pen':
-                command = [sys.executable, str(ROOT / 'pen/web/run.py'), '--out', str(self.directory), '--seed', str(seed)]
+                command = [sys.executable, str(ROOT / 'pen/web/run.py'), '--out', str(self.directory), '--seed', str(seed),
+                           '--trials', str(trials), '--ckpt', str(PEN_POLICIES[policy][1]),
+                           '--run-cfg', str(PEN_POLICIES[policy][2])]
             with (self.directory / 'solve.log').open('w') as log:
                 self.process = subprocess.Popen(command, cwd=ROOT / 'cube', env=env,
                                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -126,8 +144,8 @@ class Runner:
                 raise ValueError('Unknown camera.')
             if 'paused' in values and type(values['paused']) is not bool:
                 raise ValueError('Paused must be a boolean.')
-            if 'focus' in values and (type(values['focus']) is not int or not -1 <= values['focus'] < 256):
-                raise ValueError('Focus must be -1 (all) or an environment index from 0 to 255.')
+            if 'focus' in values and (type(values['focus']) is not int or not -1 <= values['focus'] < self.trials):
+                raise ValueError(f'Focus must be -1 (all) or an environment index from 0 to {self.trials-1}.')
             self.control.update({k: values[k] for k in ('paused', 'camera', 'focus') if k in values})
             if self.directory is not None:
                 self.save_controls()
@@ -186,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             runner = self.server.runner
             if path == '/api/start':
-                result = runner.start(body.get('device', 'cpu'), body.get('seed', 5005), body.get('physics', 'cpu'), body.get('task', 'cube'))
+                result = runner.start(body.get('device', 'cpu'), body.get('seed', 5005), body.get('physics', 'cpu'), body.get('task', 'cube'), body.get('trials', 256), body.get('policy', 'released'))
             elif path == '/api/control':
                 result = runner.configure(body)
             elif path == '/api/stop':

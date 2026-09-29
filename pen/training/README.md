@@ -154,3 +154,14 @@ runs/pen-runtime/venv/bin/python pen/training/log_existing.py \
 ```
 
 The importer uploads scalar history and configuration/summary, not policy files.
+
+## View the one-environment fine-tuning checkpoint
+
+The live UI (`bash cube/run_web.sh`, port 8088) offers **Fine-tuned · 1 env / 20
+updates**, backed by `runs/pen-training-1env-001/policy.pt`, and the original
+released actor. Choose 2 environments for a detailed side-by-side view, or
+16/64/128/256 for a larger batch. Policy selection uses a server-side allowlist;
+the fine-tuned option requires those local run artifacts. Each selection launches
+fresh GPU simulation, not recorded trajectories. The hold-phase indicator means
+the controller has switched phases; only final independent scoring determines
+whether the hold and all other task requirements passed.

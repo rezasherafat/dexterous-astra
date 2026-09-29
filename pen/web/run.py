@@ -13,6 +13,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--seed', type=int, default=41000000)
+    parser.add_argument('--trials', type=int, default=256)
+    parser.add_argument('--ckpt', type=Path, default=ROOT / 'pen/checkpoints/best_policy.pt')
+    parser.add_argument('--run-cfg', type=Path, default=ROOT / 'pen/checkpoints/env_cfg.json')
     args = parser.parse_args()
     runtime = ROOT / 'runs/pen-runtime'
     env = os.environ.copy()
@@ -21,8 +24,8 @@ def main():
     render_py = str(runtime / 'render-venv/bin/python')
     renderer = subprocess.Popen([render_py, str(ROOT / 'pen/web/render_live.py'), str(args.out / 'live')], env=env)
     evaluator = subprocess.Popen([str(runtime / 'venv/bin/python'), '-u', str(ROOT / 'pen/policy/evaluate.py'),
-        '--ckpt', str(ROOT / 'pen/checkpoints/best_policy.pt'), '--run_cfg', str(ROOT / 'pen/checkpoints/env_cfg.json'),
-        '--out', str(args.out), '--seed0', str(args.seed), '--trials', '256', '--seconds', '12',
+        '--ckpt', str(args.ckpt), '--run_cfg', str(args.run_cfg),
+        '--out', str(args.out), '--seed0', str(args.seed), '--trials', str(args.trials), '--seconds', '12',
         '--device', 'cuda:0', '--live-dir', str(args.out / 'live')], env=env)
     try:
         while not (args.out / 'meta.json').exists():
@@ -40,7 +43,7 @@ def main():
         checks = {key: all(t[key] for t in score['trials'])
                   for key in score['trials'][0] if key.endswith('_ok')}
         checks['no_drop'] = not any(t['drop'] for t in score['trials'])
-        report = dict(passed=score['summary']['passed'] == 256, completed=True,
+        report = dict(passed=score['summary']['passed'] == args.trials, completed=True,
                       checks=checks, trials=score['trials'], summary=score['summary'])
         (args.out / 'report.json').write_text(json.dumps(report, indent=2))
     finally:
