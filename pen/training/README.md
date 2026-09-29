@@ -120,3 +120,37 @@ hold and thumb labels exactly. Replay is a reward audit, not a training result.
 
 See [VALIDATION.md](VALIDATION.md) for the recorded Thor integration results,
 including the unsuccessful strict evaluation after the short training smoke run.
+
+## Weights & Biases
+
+Authenticate interactively on the host (do not put API keys in commands or Git):
+
+```bash
+runs/pen-runtime/venv/bin/wandb login
+```
+
+Enable W&B for a training run:
+
+```bash
+bash pen/run_thor_training.sh --num-envs 1 --iterations 20 \
+  --warm-start pen/checkpoints/best_policy.pt --out runs/pen-ppo-wandb \
+  --logger wandb --wandb-project dexterous-astra --wandb-entity YOUR_ENTITY
+```
+
+The entity flag is optional if the account's default entity is appropriate.
+`--wandb-mode offline` explicitly saves W&B data locally without uploading.
+Online failures are not silently converted to offline runs. The logger retains
+TensorBoard files and logs actor/value losses, entropy, learning rate, action
+noise, throughput, reward components, episode return/length, and cumulative
+hold/drop/timeout counts. A hold is not strict success. Configuration, checkpoints
+and code diffs are saved through the standard RSL-RL W&B integration. Run ID and
+URL are written to `wandb-run.json`, and uploads are finished before process exit.
+
+A completed TensorBoard run can be imported without rerunning physics:
+
+```bash
+runs/pen-runtime/venv/bin/python pen/training/log_existing.py \
+  runs/pen-training-1env-001 --project dexterous-astra --entity YOUR_ENTITY
+```
+
+The importer uploads scalar history and configuration/summary, not policy files.

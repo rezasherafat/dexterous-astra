@@ -17,6 +17,10 @@ parser.add_argument('--steps', type=int, help='Rollout steps per environment per
 parser.add_argument('--seed', type=int, default=41001000)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--warm-start', type=Path, help='Import released actor/normalizer only; new critic and optimizer')
+parser.add_argument('--logger', choices=['tensorboard', 'wandb'], default='tensorboard')
+parser.add_argument('--wandb-project', default=os.getenv('WANDB_PROJECT', 'dexterous-astra'))
+parser.add_argument('--wandb-entity', default=os.getenv('WANDB_ENTITY'))
+parser.add_argument('--wandb-mode', choices=['online', 'offline'], default='online')
 parser.add_argument('--resume', type=Path, help='Resume a training checkpoint including optimizer')
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -86,6 +90,15 @@ states without disturbing other environments. Mass/friction stay fixed per row.
 
 
 class CheckedRunner(OnPolicyRunner):
+    def _prepare_logging_writer(self):
+        super()._prepare_logging_writer()
+        if self.logger_type == 'wandb':
+            import wandb
+            wandb.config.update({'task_reward': DEFAULTS, 'seed': args.seed,
+                                 'num_envs': args.num_envs, 'strict_success_is_independently_evaluated': True})
+            (args.out/'wandb-run.json').write_text(json.dumps(dict(id=wandb.run.id,
+                url=wandb.run.url, mode=args.wandb_mode, project=args.wandb_project),indent=2)+'\n')
+
     def log(self, locs, *a, **kw):
         values = {k:float(v) for k,v in locs['loss_dict'].items()}
         if not all(np.isfinite(v) for v in values.values()):
@@ -93,6 +106,12 @@ class CheckedRunner(OnPolicyRunner):
         with (Path(self.log_dir)/'metrics.jsonl').open('a') as f:
             f.write(json.dumps(dict(iteration=locs['it'], losses=values,
                  collection_seconds=locs['collection_time'], update_seconds=locs['learn_time']))+'\n')
+        env = self.env.unwrapped
+        for name, value in {'completed_episodes': env.completed_episodes,
+                            'completed_holds': env.completed_holds,
+                            'completed_drops': env.completed_drops,
+                            'completed_timeouts': env.completed_episodes-env.completed_holds-env.completed_drops}.items():
+            self.writer.add_scalar(f'Outcomes/{name}', value, locs['it'])
         super().log(locs,*a,**kw)
 
 
@@ -107,6 +126,13 @@ def main():
     prepare_bank(env)
     wrapped = RslRlVecEnvWrapper(env)
     train_cfg = json.loads(Path(__file__).with_name('config.json').read_text())
+    train_cfg['logger'] = args.logger
+    if args.logger == 'wandb':
+        train_cfg['wandb_project'] = args.wandb_project
+        os.environ['WANDB_MODE'] = args.wandb_mode
+        os.environ['WANDB_DIR'] = str(args.out.resolve())
+        if args.wandb_entity:
+            os.environ['WANDB_USERNAME'] = args.wandb_entity
     if args.steps:train_cfg['num_steps_per_env'] = args.steps
     if args.num_envs*train_cfg['num_steps_per_env'] < train_cfg['algorithm']['num_mini_batches']:
         raise ValueError('Rollout must contain at least one sample per minibatch')
@@ -147,6 +173,10 @@ def main():
     (args.out/'env_cfg.json').write_text(json.dumps(dict(action_scale=cfg.action_scale),indent=2)+'\n')
     (args.out/'state.json').write_text(json.dumps(dict(history=[dict(iter=0,stage=3,target_box=cfg.target_box)]),indent=2)+'\n')
     (args.out/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+    if args.logger == 'wandb':
+        import wandb
+        wandb.run.summary.update(summary)
+        wandb.finish()
     print('TRAINING_COMPLETE', json.dumps(summary),flush=True)
     env.close()
 
@@ -156,6 +186,10 @@ if __name__ == '__main__':
     except BaseException:
         import traceback
         traceback.print_exc()
+        if args.logger == 'wandb':
+            import wandb
+            if wandb.run is not None:
+                wandb.finish(exit_code=1)
         sys.stdout.flush();sys.stderr.flush()
         os._exit(1)
     # Isaac 5.1 can hang during app.close() on Thor. Checkpoints and logs are

@@ -1,2 +1,5 @@
 # Additional dependency on top of the isolated pen runtime in pen/THOR.md.
 tensorboard==2.20.0
+# Compatible with Isaac Sim 5.1's Click pin.
+wandb==0.19.11
+click==8.1.7
