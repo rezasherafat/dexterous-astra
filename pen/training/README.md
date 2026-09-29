@@ -190,3 +190,6 @@ states and mass/friction values, avoiding repeated settling during capacity
 checks/restarts. Its seed and environment count must match; array shapes and
 finiteness are checked. Use only banks generated under this same physics setup.
 The standalone process ID is recorded in `RUN/pid` for requesting a graceful stop.
+
+Measured Thor capacity results and the selected 32,768-environment run are recorded
+in [CAPACITY.md](CAPACITY.md).
