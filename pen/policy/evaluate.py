@@ -9,6 +9,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -20,6 +21,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--seed0", type=int, required=True)
 ap.add_argument("--trials", type=int, default=32)
 ap.add_argument("--seconds", type=float, default=12.0)
+ap.add_argument("--live-dir", type=Path, help="Publish live state and accept pause controls")
 AppLauncher.add_app_launcher_args(ap)
 args = ap.parse_args()
 args.headless = True
@@ -147,8 +149,20 @@ keys = (
     "physx_penetration",
 )
 log = {k: [] for k in keys}
+live = None
+if args.live_dir:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "web"))
+    from live import Publisher
+    live = Publisher(args.live_dir)
+    live.publish(env._q().detach().cpu().numpy(), bank["pos"].cpu().numpy(),
+                 bank["quat"].cpu().numpy(), 0.0, [0.0] * n, force=True,
+                 holding=[False] * n, seed0=args.seed0)
+torch.cuda.synchronize(dev) if str(dev).startswith("cuda") else None
+rollout_started = time.perf_counter()
 with torch.inference_mode():
     for s in range(steps):
+        if live:
+            live.wait()
         a = policy.act_inference(TensorDict({"policy": obs}, batch_size=[n]))
         o, _, term, trunc, _ = env.step(a)
         obs = o["policy"]
@@ -172,9 +186,17 @@ with torch.inference_mode():
             ),
         ):
             log[k].append(v.detach().cpu().numpy().astype(np.float32))
+        if live:
+            live.publish(log["q"][-1], log["pen_pos"][-1], log["pen_quat"][-1],
+                         (s + 1) * CONTROL_DT,
+                         (env.progress / (2 * math.pi)).detach().cpu().tolist(),
+                         force=s == steps - 1, holding=env.holding.detach().cpu().tolist(),
+                         seed0=args.seed0)
         if (term | trunc).any():
             print("[eval] unexpected environment reset at step", s, flush=True)
             break
+torch.cuda.synchronize(dev) if str(dev).startswith("cuda") else None
+rollout_seconds = time.perf_counter() - rollout_started
 out = Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
 arrays = {k: np.stack(v, 1) for k, v in log.items()}  # (trials, T, ...)
@@ -194,6 +216,11 @@ np.savez_compressed(
     unsettled=pending,
 )
 meta = {
+    "rollout_wall_seconds": rollout_seconds,
+    "environment_control_steps_per_second": n * len(log["q"]) / rollout_seconds,
+    "per_environment_realtime_factor": len(log["q"]) * CONTROL_DT / rollout_seconds,
+    "device": str(dev),
+    "live_rendering": live is not None,
     "ckpt": args.ckpt,
     "target_box": cfg.target_box,
     "stage_obs": stage,

@@ -197,7 +197,7 @@ def execute(sim, cp, policy, top, target, relabel, after_step, seconds=6.0, unlo
     start = float(d.time)
     start_facelets = sim.observe()["facelets"]
     locks = physics.set_roll_welds(sim, True)
-    mujoco.mj_forward(m, d)
+    sim.forward()
     wrist_rot0 = d.xmat[wrist].reshape(3, 3).copy()
     align = args.get("align", "none")
     ref = Reference(
@@ -251,7 +251,7 @@ def execute(sim, cp, policy, top, target, relabel, after_step, seconds=6.0, unlo
         return f
 
     for step in range(round(seconds / CONTROL_DT) + 1):
-        mujoco.mj_forward(m, d)
+        sim.forward()
         wrist_rot = d.xmat[wrist].reshape(3, 3)
         geo = measure(
             ref,
@@ -333,8 +333,7 @@ def execute(sim, cp, policy, top, target, relabel, after_step, seconds=6.0, unlo
             elapsed,
             horizon,
         )
-        with torch.no_grad():
-            action = policy.mean_action(obs).clamp(-1, 1)
+        action = policy.predict_action(obs)
         targets = (targets + scale * action).clamp(t(low), t(high))
         sim.hand_target[ids] = targets[0].numpy()
         sim.phase = "rl_single_hand_tumble"

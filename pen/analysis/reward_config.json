@@ -1,0 +1,19 @@
+{
+  "version": "offline-v0",
+  "rotation": 20.0,
+  "timely_turn": 3.0,
+  "hold_shaping": 4.0,
+  "hold_bonus": 6.0,
+  "thumb_shaping": 2.0,
+  "thumb_bonus": 6.0,
+  "participation": 6.0,
+  "completion_proxy": 40.0,
+  "drop": 40.0,
+  "time_rate": 0.1,
+  "instability_rate": 0.2,
+  "braking_rate": 0.2,
+  "joint_limit_rate": 1.0,
+  "penetration_rate": 0.5,
+  "action_change_rate": 0.1,
+  "discount_factors": [0.99, 0.995, 0.999]
+}

@@ -169,7 +169,7 @@ def execute(sim, cp, policy, command, after_step, internal_collisions=True, unwe
     m.dof_frictionloss[layer_dofs] = 0.0
     m.dof_damping[layer_dofs] = 0.0
     m.dof_armature[layer_dofs] = 0.0
-    mujoco.mj_forward(m, d)
+    sim.forward()
     wrist_rot0 = d.xmat[wrist].reshape(3, 3).copy()
     home_rot = t(wrist_rot0.T @ d.xmat[core].reshape(3, 3))[None] @ relabel
     home_pos = t(wrist_rot0.T @ (d.xpos[core] - d.xpos[wrist]))[None]
@@ -200,7 +200,7 @@ def execute(sim, cp, policy, command, after_step, internal_collisions=True, unwe
         return f
 
     for step in range(round(horizon / CONTROL_DT) + 1):
-        mujoco.mj_forward(m, d)
+        sim.forward()
         wrist_rot = d.xmat[wrist].reshape(3, 3)
         lower_rot = t(d.xmat[core].reshape(3, 3))[None] @ relabel
         hinge = torch.tensor([float(d.qpos[hinge_q]) - hinge0])
@@ -280,8 +280,7 @@ def execute(sim, cp, policy, command, after_step, internal_collisions=True, unwe
             elapsed,
             horizon,
         )
-        with torch.no_grad():
-            action = policy.mean_action(obs).clamp(-1, 1)
+        action = policy.predict_action(obs)
         targets = (targets + scale * action).clamp(low_t, high_t)
         sim.hand_target[ids] = targets[0].numpy()
         sim.phase = "rl_one_hand_face_turn"

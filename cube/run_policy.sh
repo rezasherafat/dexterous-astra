@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Policy cube: scripted pickup, then five learned one-hand maneuvers (turn L', roll, turn F', roll, turn U').
 # Seed 5005, mix U F L. Renders the full solve.
-#   PY=... cube/run_policy.sh OUT
+#   PY=... cube/run_policy.sh OUT [DEVICE] [PHYSICS]
 set -euo pipefail
-out=$(realpath -m "$1")
+out=$(realpath -m "$1") device=${2:-cpu} physics=${3:-cpu}
 cd "$(dirname "$0")"
 export MUJOCO_GL=egl OMP_NUM_THREADS=1   # single-threaded torch: other thread counts change the rollout
-"$PY" policy/solve.py --out "$out" --seed 5005 --scramble "U F L"
+"$PY" policy/solve.py --out "$out" --seed 5005 --scramble "U F L" --device "$device" --physics "$physics"
 OMP_NUM_THREADS=2 PYTHONPATH=sim "$PY" sim/render.py --model "$out/scene.mjb" --trajectory "$out/trajectory.npz" --out "$out/video.mp4"

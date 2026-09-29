@@ -1,5 +1,7 @@
 """Actor network of the checkpoints (the critic is stored but unused here)."""
 
+import time
+
 import torch
 from torch import nn
 
@@ -30,6 +32,8 @@ class Normalizer(nn.Module):
 class Policy(nn.Module):
     def __init__(self, obs_dim, action_dim, logstd=-0.7):
         super().__init__()
+        self.inference_seconds = 0.0
+        self.inference_calls = 0
         self.obs_dim, self.action_dim = obs_dim, action_dim
         self.norm = Normalizer(obs_dim)
         self.actor = mlp([obs_dim, 512, 256, 128, action_dim], 0.01)
@@ -39,10 +43,24 @@ class Policy(nn.Module):
     def mean_action(self, obs):
         return self.actor(self.norm(obs))
 
+    def predict_action(self, obs):
+        """Run the actor on its device and return bounded CPU actions for MuJoCo.
 
-def load_policy(path):
+        Timing includes observation/action transfers; .cpu() waits for CUDA work.
+        """
+        started = time.perf_counter()
+        device = self.norm.mean.device
+        with torch.no_grad():
+            action = self.mean_action(obs.to(device)).clamp(-1, 1).cpu()
+        self.inference_seconds += time.perf_counter() - started
+        self.inference_calls += 1
+        return action
+
+
+def load_policy(path, device="cpu"):
     cp = torch.load(path, map_location="cpu", weights_only=False)
     policy = Policy(cp["obs_dim"], cp["action_dim"])
     policy.load_state_dict(cp["policy"])
+    policy.to(device)
     policy.eval()
     return cp, policy

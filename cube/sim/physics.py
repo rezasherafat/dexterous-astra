@@ -180,7 +180,7 @@ def _activate(sim, ids, active):
             m.eq_data[i, 6:10] = quat
             m.eq_data[i, 10] = 1
     d.eq_active[ids] = bool(active)
-    mujoco.mj_forward(m, d)
+    sim.forward()
 
 
 def set_roll_welds(sim, active):
@@ -210,7 +210,7 @@ def set_turn_welds(sim, face):
 
 def release_welds(sim):
     sim.d.eq_active[:] = False
-    mujoco.mj_forward(sim.m, sim.d)
+    sim.forward()
 
 
 def cube_contacts(sim):

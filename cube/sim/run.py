@@ -65,6 +65,7 @@ class Sim:
         self.fingers = JointFilter(self.d.qpos[self.act_qadr], HAND_SPEED, HAND_ACCEL, frequency=40.0)
         self.hand_target = self.d.qpos[self.act_qadr].copy()
         self.phase = "initial"
+        self.backend = None
         self.substep_worst = {"penetration_m": 0.0, "joint_violation_rad": 0.0}
         if self.arms:
             # Legacy geometric finger planners use independent hand poses in a
@@ -80,7 +81,7 @@ class Sim:
             # mj_step integrates qpos after computing its Cartesian fields.
             # Controllers need joints, wrists, cubies, and contacts from the
             # same instant when reconstructing fingertip force Jacobians.
-            mujoco.mj_forward(m, d)
+            self.forward()
         rots, _ = scene.cubie_rotations(m, d)
         facelets, misalign = scene.facelets(m, d)
         contacts = []
@@ -166,7 +167,15 @@ class Sim:
             mujoco.mju_quatIntegrate(d.mocap_quat[i], dq, min(1.0, MAX_WRIST_SPEED[1] * dt / max(ang, 1e-12)))
         scene.apply_detents(m, d, DETENT)
 
+    def forward(self):
+        if self.backend is not None:
+            self.backend.forward()
+        else:
+            mujoco.mj_forward(self.m, self.d)
+
     def step(self, nsub):
+        if self.backend is not None:
+            return self.backend.step(nsub)
         m, d = self.m, self.d
         if not self.arms:
             # Preserve the integration schedule of historical floating runs.

@@ -137,14 +137,27 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--scramble", default="U F L")
     p.add_argument("--seed", type=int, default=5005, help="friction (+-2%%) and actuator strength (+-1%%) jitter")
+    p.add_argument("--device", default="cpu", help="Policy inference device: cpu, cuda, or cuda:N; independent of --physics")
+    p.add_argument("--live-dir", type=Path, help="Publish live frames and accept viewer controls")
+    p.add_argument("--physics", choices=("cpu", "warp"), default="cpu", help="Physics backend; Warp runs on CUDA")
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(1)
     torch.manual_seed(a.seed)
-    turn_policies = [load_policy(CHECKPOINTS / name) for name in TURN_POLICIES]
-    roll_policies = [load_policy(CHECKPOINTS / name) for name in ROLL_POLICIES]
+    turn_policies = [load_policy(CHECKPOINTS / name, device=a.device) for name in TURN_POLICIES]
+    roll_policies = [load_policy(CHECKPOINTS / name, device=a.device) for name in ROLL_POLICIES]
     sim, physics_info = physics.make_sim(a.scramble, a.out, a.seed)
+    if a.physics == "warp":
+        from warp_backend import WarpBackend
+
+        sim.backend = WarpBackend(sim)
     ctrl = pickup_controller(sim, a.scramble, a.out)
+    live = None
+    if a.live_dir:
+        from live_view import LiveView
+
+        live = LiveView(a.live_dir, sim)
+        live.update(sim, force=True)
     audit = Audit(sim)
     trace = dict(
         qpos=[sim.d.qpos.copy()],
@@ -154,6 +167,8 @@ def main():
     )
 
     def record_step():
+        if live:
+            live.update(sim)
         audit.update()
         if float(sim.d.time) - trace["time"][-1] < 0.02 - 1e-7:
             return
@@ -233,9 +248,18 @@ def main():
         wall_seconds=time.monotonic() - started,
         scramble=a.scramble,
         physics=physics_info,
+        simulation=sim.backend.info() if sim.backend else dict(backend="cpu", device="cpu"),
+        inference=dict(
+            device=str(turn_policies[0][1].norm.mean.device),
+            calls=sum(policy.inference_calls for _, policy in turn_policies + roll_policies),
+            seconds=sum(policy.inference_seconds for _, policy in turn_policies + roll_policies),
+        ),
     )
     right_touch = any("r_" in str(m.get("other_body_contacts")) for m in maneuvers)
     report["passed"] = bool(report["passed"] and not error and len(maneuvers) == len(steps) and not right_touch)
+    if live:
+        live.update(sim, force=True)
+        live.close()
     write_json(a.out / "report.json", report)
     np.savez_compressed(a.out / "trajectory.npz", **{k: np.asarray(v) for k, v in trace.items()})
     print("RESULT", {k: v for k, v in report.items() if k not in ("maneuvers", "physics")}, flush=True)
