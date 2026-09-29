@@ -62,3 +62,18 @@ GPU and CPU trajectories are not expected to match: MuJoCo-Warp uses float32 and
 GPU force/audit checks: `.venv/bin/python -m unittest discover -s cube/tests -v`.
 
 Validated on AGX Thor with **Warp physics + CPU inference**, seed 5005, scramble `U F L`: all five maneuvers and seven audit checks passed (54,030 CUDA physics steps). The observed rollout took 369 seconds for 54 seconds of simulated motion, plus 133 seconds of backend setup; other validation work overlapped portions of that run, so this is not an isolated speed benchmark. The CPU baseline remained bit-for-bit unchanged.
+
+## Pen PPO training
+
+A new Isaac Lab / RSL-RL training integration is available on Thor:
+
+```bash
+bash pen/run_thor_training.sh --num-envs 256 --iterations 1000 \
+  --warm-start pen/checkpoints/best_policy.pt --out runs/pen-ppo-001
+```
+
+This uses a new task reward developed from the offline rollout audit, not the
+original authors' reward. It supports training from scratch, actor warm-start,
+checkpoint resume, component logging, and export to the unchanged evaluator.
+See [pen/training/README.md](pen/training/README.md) for reward definitions,
+configuration, limitations, and validation commands.

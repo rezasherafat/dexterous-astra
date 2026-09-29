@@ -84,3 +84,10 @@ PhysX and CUDA inference. Results are in `runs/thor-pen-policy-32/score.json`.
 No policy weights, rewards, physics parameters, or acceptance thresholds were
 changed to achieve these results. This reproduces the spin-and-hold behavior,
 with partial success under the full strict gate.
+
+## PPO training
+
+The new training integration is documented in [training/README.md](training/README.md).
+Launch with `bash pen/run_thor_training.sh --num-envs 256 --iterations 1000 --out runs/pen-ppo-001`.
+Add `--warm-start pen/checkpoints/best_policy.pt` to initialize the released actor.
+This uses a new audited reward; it does not recover the original training code.

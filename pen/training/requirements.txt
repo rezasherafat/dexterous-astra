@@ -1,0 +1,2 @@
+# Additional dependency on top of the isolated pen runtime in pen/THOR.md.
+tensorboard==2.20.0
