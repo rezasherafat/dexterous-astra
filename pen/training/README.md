@@ -165,3 +165,28 @@ the fine-tuned option requires those local run artifacts. Each selection launche
 fresh GPU simulation, not recorded trajectories. The hold-phase indicator means
 the controller has switched phases; only final independent scoring determines
 whether the hold and all other task requirements passed.
+
+## Bounded larger runs
+
+`--max-minutes 30` limits training-loop time (excluding scene/reset preparation).
+The run finishes the current PPO update, saves a full checkpoint and evaluator
+export, and closes W&B. `--save-interval 10` also saves periodic checkpoints.
+SIGINT/SIGTERM received during training request the same graceful stop at the
+next update boundary. Resume numbering starts after the saved completed update.
+The actual completed update count and stop reason are recorded in `summary.json`.
+
+Example (choose the environment count after measuring host capacity):
+
+```bash
+bash pen/run_thor_training.sh --num-envs 4096 --device cuda:0 \
+  --iterations 100000 --max-minutes 30 --save-interval 10 \
+  --resume runs/pen-training-1env-001/model_19.pt \
+  --logger wandb --wandb-project dexterous-astra \
+  --out runs/pen-ppo-large
+```
+
+`--reset-bank PRIOR_RUN/reset_bank.npz` reuses the prior run's validated settled
+states and mass/friction values, avoiding repeated settling during capacity
+checks/restarts. Its seed and environment count must match; array shapes and
+finiteness are checked. Use only banks generated under this same physics setup.
+The standalone process ID is recorded in `RUN/pid` for requesting a graceful stop.

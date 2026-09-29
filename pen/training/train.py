@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import signal
 from pathlib import Path
 import sys
 import time
@@ -13,7 +14,10 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--num-envs', type=int, default=256)
 parser.add_argument('--iterations', type=int, default=1000)
+parser.add_argument('--max-minutes', type=float, default=0, help='Stop after this training time at an update boundary; 0 disables')
+parser.add_argument('--save-interval', type=int, default=50)
 parser.add_argument('--steps', type=int, help='Rollout steps per environment per update')
+parser.add_argument('--reset-bank', type=Path, help='Reuse a validated reset bank from a run with matching seed/count')
 parser.add_argument('--seed', type=int, default=41001000)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--warm-start', type=Path, help='Import released actor/normalizer only; new critic and optimizer')
@@ -26,6 +30,8 @@ AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if args.warm_start and args.resume:
     parser.error('Choose warm-start or resume, not both')
+if args.max_minutes < 0 or args.save_interval < 1:
+    parser.error('Time budget must be nonnegative and checkpoint interval positive')
 if args.num_envs < 1 or args.iterations < 1 or (args.steps is not None and args.steps < 1):
     parser.error('Environment, iteration and step counts must be positive')
 if any(41100000 <= args.seed+i <= 41100099 for i in range(args.num_envs)):
@@ -33,6 +39,7 @@ if any(41100000 <= args.seed+i <= 41100099 for i in range(args.num_envs)):
 args.out.mkdir(parents=True, exist_ok=True)
 if (args.out / 'config.json').exists():
     parser.error('Output directory already contains a run; use a fresh directory')
+(args.out / 'pid').write_text(str(os.getpid()) + '\n')
 args.headless = True
 app = AppLauncher(args).app
 
@@ -53,6 +60,27 @@ Physics stepping only happens before training. Asynchronous resets restore these
 states without disturbing other environments. Mass/friction stay fixed per row.
 """
     n, dev = env.num_envs, env.device
+    if args.reset_bank:
+        import shutil
+        source_config = json.loads(args.reset_bank.with_name('config.json').read_text())['arguments']
+        if source_config['seed'] != args.seed or source_config['num_envs'] != n:
+            raise ValueError('Reset bank seed/environment count must match the source run')
+        with np.load(args.reset_bank) as saved:
+            values = {k:saved[k] for k in saved.files}
+        expected = {'q':(n,22), 'targets':(n,22), 'pos':(n,3), 'quat':(n,4)}
+        for key,shape in expected.items():
+            if values[key].shape != shape or not np.isfinite(values[key]).all():
+                raise ValueError(f'Invalid reset bank field {key}')
+        view = env.pen.root_physx_view
+        for key,current in [('masses',view.get_masses()),('materials',view.get_material_properties())]:
+            if values[key].shape != tuple(current.shape) or not np.isfinite(values[key]).all():
+                raise ValueError(f'Invalid reset bank field {key}')
+        view.set_masses(torch.as_tensor(values['masses']),torch.arange(n))
+        view.set_material_properties(torch.as_tensor(values['materials']),torch.arange(n))
+        env.bank = {k:torch.as_tensor(values[k],device=dev) for k in expected}
+        shutil.copy2(args.reset_bank,args.out/'reset_bank.npz')
+        print(f'Reused validated reset bank: {args.reset_bank}',flush=True)
+        return
     gens = [torch.Generator().manual_seed(args.seed+i) for i in range(n)]
     view = env.pen.root_physx_view
     masses, mats = view.get_masses(), view.get_material_properties()
@@ -66,11 +94,13 @@ states without disturbing other environments. Mass/friction stay fixed per row.
     pending = torch.ones(n, dtype=torch.bool, device=dev)
     attempts = torch.zeros(n, dtype=torch.long, device=dev)
     ids = torch.arange(n, device=dev)
+    grasp_q, q_lo, q_hi = env.grasp_q.cpu(), env.q_lo.cpu(), env.q_hi.cpu()
+    grasp_pos = env.grasp_pen_pos.cpu()
     for _ in range(20):
         qs, ps, rots = [], [], []
         for g in gens:
-            q = (env.grasp_q.cpu() + env.cfg.joint_noise*(2*torch.rand(22,generator=g)-1)).clamp(env.q_lo.cpu(),env.q_hi.cpu())
-            pos = env.grasp_pen_pos.cpu().clone()
+            q = (grasp_q + env.cfg.joint_noise*(2*torch.rand(22,generator=g)-1)).clamp(q_lo,q_hi)
+            pos = grasp_pos.clone()
             pos[:2] += env.cfg.pen_xy_noise*(2*torch.rand(2,generator=g)-1)
             pos[2] += .002
             yaw = torch.deg2rad(torch.tensor(env.cfg.pen_yaw_noise_deg))*(2*torch.rand((),generator=g)-1)
@@ -87,6 +117,10 @@ states without disturbing other environments. Mass/friction stay fixed per row.
     env.bank = bank
     np.savez_compressed(args.out/'reset_bank.npz', **{k:v.cpu().numpy() for k,v in bank.items()},
                         masses=masses.cpu().numpy(), materials=mats.cpu().numpy(), attempts=attempts.cpu().numpy())
+
+
+class TrainingStopped(Exception):
+    pass
 
 
 class CheckedRunner(OnPolicyRunner):
@@ -112,7 +146,10 @@ class CheckedRunner(OnPolicyRunner):
                             'completed_drops': env.completed_drops,
                             'completed_timeouts': env.completed_episodes-env.completed_holds-env.completed_drops}.items():
             self.writer.add_scalar(f'Outcomes/{name}', value, locs['it'])
+        self.writer.add_scalar('Memory/torch_peak_allocated_gib', torch.cuda.max_memory_allocated()/2**30, locs['it'])
         super().log(locs,*a,**kw)
+        if self.stop_requested or (self.deadline is not None and time.monotonic() >= self.deadline):
+            raise TrainingStopped('signal' if self.stop_requested else 'time_budget')
 
 
 def main():
@@ -126,6 +163,7 @@ def main():
     prepare_bank(env)
     wrapped = RslRlVecEnvWrapper(env)
     train_cfg = json.loads(Path(__file__).with_name('config.json').read_text())
+    train_cfg['save_interval'] = args.save_interval
     train_cfg['logger'] = args.logger
     if args.logger == 'wandb':
         train_cfg['wandb_project'] = args.wandb_project
@@ -144,6 +182,7 @@ def main():
     runner.add_git_repo_to_log(__file__)
     if args.resume:
         runner.load(str(args.resume))
+        runner.current_learning_iteration += 1  # Resume after the saved, completed update.
     elif args.warm_start:
         ck = torch.load(args.warm_start,map_location=env.device,weights_only=False)['model_state_dict']
         current = runner.alg.policy.state_dict()
@@ -154,14 +193,26 @@ def main():
         runner.alg.policy.load_state_dict(current)
     before = {k:v.detach().clone() for k,v in runner.alg.policy.named_parameters()}
     start = time.perf_counter()
-    runner.learn(args.iterations)
+    runner.stop_requested = False
+    runner.deadline = time.monotonic() + args.max_minutes*60 if args.max_minutes else None
+    first_iteration = runner.current_learning_iteration
+    def request_stop(signum, frame):
+        runner.stop_requested = True
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    stop_reason = 'iteration_limit'
+    try:
+        runner.learn(args.iterations)
+    except TrainingStopped as exc:
+        stop_reason = str(exc)
+        runner.save(str(args.out / f'model_{runner.current_learning_iteration}.pt'))
     if runner.writer is not None:
         runner.writer.flush()
         runner.writer.close()
     changes = {k:float((v-before[k]).abs().max()) for k,v in runner.alg.policy.named_parameters()}
     if not all(torch.isfinite(v).all() for v in runner.alg.policy.parameters()):
         raise FloatingPointError('Nonfinite trained parameters')
-    summary = dict(device=str(env.device),num_envs=env.num_envs,iterations=args.iterations,
+    summary = dict(device=str(env.device),num_envs=env.num_envs,iterations=runner.current_learning_iteration-first_iteration+1, stop_reason=stop_reason,
                    wall_seconds=time.perf_counter()-start,completed_episodes=env.completed_episodes,
                    completed_holds=env.completed_holds,completed_drops=env.completed_drops,
                    actor_max_parameter_change=max(v for k,v in changes.items() if k.startswith('actor.')),
